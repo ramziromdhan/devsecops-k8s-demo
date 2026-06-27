@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linsoft-demo-config
+  namespace: default
+data:
+  APP_Version: "1.0.0"
+  LOG_LEVEL: "info"
+  

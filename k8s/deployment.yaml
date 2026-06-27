@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linsoft-demo
+  namespace: default
+  labels:
+    app: linsoft-demo
+spec:
+  replicas: 2                          # 2 pods — ça teste la résilience
+  selector:
+    matchLabels:
+      app: linsoft-demo
+  strategy:
+    type: RollingUpdate                # mise à jour sans downtime
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: linsoft-demo
+    spec:
+      containers:
+        - name: app
+          image: localhost:5000/linsoft-demo:1.0.0
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: linsoft-demo-config
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: linsoft-demo-secret
+                  key: API_KEY
+          resources:                   # TOUJOURS définir des limites
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:               # K8s redémarre le pod si ça échoue
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:              # K8s n'envoie du trafic que si ready
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

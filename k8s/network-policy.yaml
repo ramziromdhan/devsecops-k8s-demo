@@ -1,0 +1,25 @@
+# k8s/network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: linsoft-demo-netpol
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: linsoft-demo
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}     # seulement les pods du même namespace
+      ports:
+        - port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53           # DNS uniquement vers kube-system
