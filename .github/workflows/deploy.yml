@@ -1,0 +1,39 @@
+name: Build → Scan → Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  IMAGE_NAME: linsoft-demo
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-scan-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: "table"
+          exit-code: "1"            # fail le pipeline si CRITICAL trouvé
+          severity: "CRITICAL,HIGH"
+
+      - name: Push to registry
+        run: |
+          docker tag $IMAGE_NAME:$IMAGE_TAG localhost:5000/$IMAGE_NAME:$IMAGE_TAG
+          docker push localhost:5000/$IMAGE_NAME:$IMAGE_TAG
+
+      - name: Deploy to Kubernetes
+        run: |
+          helm upgrade --install linsoft-app ./linsoft-demo-chart \
+            --set image.tag=$IMAGE_TAG

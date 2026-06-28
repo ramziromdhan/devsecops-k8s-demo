@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Stage 2 : image finale ────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-# Ne pas tourner en root — bonne pratique sécurité dès le départ
+# Ne pas tourner en root 
 RUN useradd --no-create-home --uid 1001 appuser
 
 WORKDIR /app
