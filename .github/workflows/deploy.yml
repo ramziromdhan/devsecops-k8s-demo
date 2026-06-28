@@ -1,16 +1,19 @@
-name: Build → Scan → Deploy
+name: CI/CD — Build · Scan · Deploy (Minikube)
 
 on:
   push:
     branches: [main]
 
 env:
-  IMAGE_NAME: linsoft-demo
+  IMAGE_NAME: devsecops-k8s-demo
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   build-scan-deploy:
     runs-on: ubuntu-latest
+    # Expose le résultat du job pour que rollback puisse le lire
+    outputs:
+      deploy_status: ${{ steps.deploy.outcome }}
 
     steps:
       - name: Checkout
@@ -19,21 +22,107 @@ jobs:
       - name: Build Docker image
         run: |
           docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
 
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
-          format: "table"
-          exit-code: "1"            # fail le pipeline si CRITICAL trouvé
-          severity: "CRITICAL,HIGH"
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
 
-      - name: Push to registry
-        run: |
-          docker tag $IMAGE_NAME:$IMAGE_TAG localhost:5000/$IMAGE_NAME:$IMAGE_TAG
-          docker push localhost:5000/$IMAGE_NAME:$IMAGE_TAG
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@latest
+        with:
+          driver: docker
+          cpus: 2
+          memory: 3g
 
-      - name: Deploy to Kubernetes
+      - name: Load image into Minikube
+        run: minikube image load $IMAGE_NAME:$IMAGE_TAG
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Deploy with Helm
+        id: deploy                   # ← id pour capturer le résultat
         run: |
           helm upgrade --install linsoft-app ./linsoft-demo-chart \
-            --set image.tag=$IMAGE_TAG
+            --set image.repository=$IMAGE_NAME \
+            --set image.tag=$IMAGE_TAG \
+            --set image.pullPolicy=Never \
+            --wait \
+            --timeout 120s
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/linsoft-app-app
+          kubectl get pods
+
+      - name: Smoke tests
+        id: smoke
+        run: |
+          kubectl port-forward svc/linsoft-app-svc 8080:80 &
+          sleep 5
+          curl -sf http://localhost:8080/health | grep "ok"
+          curl -sf http://localhost:8080/ | grep "devsecops-k8s-demo"
+          echo "✅ All smoke tests passed"
+
+      - name: Pipeline summary
+        if: always()
+        run: |
+          echo "## 🚀 Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trivy scan | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke tests | ${{ steps.smoke.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "Image: \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ── Job rollback ───────────────────────────────────────────────
+  rollback:
+    runs-on: ubuntu-latest
+    needs: build-scan-deploy
+    # Se déclenche UNIQUEMENT si le job principal échoue
+    if: failure()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@latest
+        with:
+          driver: docker
+          cpus: 2
+          memory: 3g
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Rollback to previous revision
+        run: |
+          echo "⚠️ Deploy failed — rolling back..."
+
+          # Vérifier s'il y a une révision précédente
+          REVISION=$(helm history linsoft-app --max 2 -o json \
+            | python3 -c "import sys,json; h=json.load(sys.stdin); print(len(h))")
+
+          if [ "$REVISION" -gt 1 ]; then
+            helm rollback linsoft-app
+            echo "✅ Rolled back to previous revision"
+          else
+            echo "ℹ️ No previous revision to rollback to"
+            helm uninstall linsoft-app || true
+          fi
+
+          kubectl get pods
+
+      - name: Rollback summary
+        if: always()
+        run: |
+          echo "## ⚠️ Rollback executed" >> $GITHUB_STEP_SUMMARY
+          echo "Deploy failed on commit \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Previous revision restored." >> $GITHUB_STEP_SUMMARY

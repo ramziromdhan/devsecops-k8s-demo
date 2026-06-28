@@ -1,29 +1,22 @@
-# Nombre de réplicas
 replicaCount: 2
 
-# Image Docker
 image:
-  repository: localhost:5000/linsoft-demo
-  tag: "1.0.0"
-  pullPolicy: IfNotPresent
+  repository: devsecops-k8s-demo
+  tag: "latest"
+  pullPolicy: IfNotPresent   # sera overridé par --set dans le pipeline
 
-# Service
 service:
   type: ClusterIP
   port: 80
   targetPort: 8080
 
-# Ingress
 ingress:
-  enabled: true
-  host: linsoft-demo.local
+  enabled: false             # désactivé par défaut, pas d'ingress dans le runner
 
-# Variables d'environnement de l'app
 config:
   appVersion: "1.0.0"
   logLevel: "info"
 
-# Limites de ressources
 resources:
   requests:
     cpu: "100m"
