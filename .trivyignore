@@ -1,0 +1,14 @@
+# CVE dans perl-base (debian 13.5) — aucun fix disponible upstream
+# Status: fix_deferred / affected — à réévaluer lors du prochain rebuild
+CVE-2026-42496
+CVE-2026-8376
+CVE-2026-48962
+CVE-2026-9538
+CVE-2026-42497
+
+# CVE dans libsqlite3-0 — aucun fix disponible
+CVE-2026-11822
+CVE-2026-11824
+
+# CVE dans ncurses — aucun fix disponible
+CVE-2025-69720
