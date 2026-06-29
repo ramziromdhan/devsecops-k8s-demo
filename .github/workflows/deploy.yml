@@ -88,6 +88,8 @@ jobs:
     needs: build-scan-deploy
     # Se déclenche UNIQUEMENT si le job principal échoue
     if: failure()
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
