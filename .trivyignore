@@ -12,3 +12,8 @@ CVE-2026-11824
 
 # CVE dans ncurses — aucun fix disponible
 CVE-2025-69720
+
+# CVE détectées le 2026-06-30 — aucun fix disponible upstream Debian 13.5
+# Privilege escalation via symlink traversal dans libacl/libattr
+CVE-2026-54369
+CVE-2026-54371
