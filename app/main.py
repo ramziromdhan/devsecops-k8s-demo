@@ -6,9 +6,9 @@ app = FastAPI()
 @app.get("/")
 def root():
     return {
-        "service": "linsoft-demo",
+        "service": "devsecops-k8s-demo",
         "version": os.getenv("APP_VERSION", "1.0.0"),
-        "hostname": socket.gethostname()   # utile pour voir quel pod répond
+        "hostname": socket.gethostname()
     }
 
 @app.get("/health")
