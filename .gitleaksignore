@@ -1,0 +1,11 @@
+# Faux positif : clé GPG publique de l'image Python officielle Docker
+# Source : métadonnées de l'image dans trivy-report.json
+# Ce n'est pas un secret — c'est une empreinte publique vérifiable
+87defb9025959217850af062984d4013d0419a7e:trivy-report.json:generic-api-key:65
+87defb9025959217850af062984d4013d0419a7e:trivy-report.json:generic-api-key:155
+
+# Valeur de démonstration intentionnelle dans k8s/secret.yaml
+# API_KEY = base64("secret_key") — valeur de démo, pas un vrai secret
+# En production, ce fichier ne serait pas commité — les secrets
+# seraient injectés via Vault, Sealed Secrets ou External Secrets Operator
+87defb9025959217850af062984d4013d0419a7e:k8s/secret.yaml:kubernetes-secret-yaml:2

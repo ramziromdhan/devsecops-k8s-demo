@@ -1,4 +1,6 @@
 minikube-linux-amd64
 trivy-report.json
+bandit-report.json
+gitleaks-report.json
 __pycache__/
 *.pyc
