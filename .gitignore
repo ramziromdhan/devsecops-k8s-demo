@@ -2,5 +2,7 @@ minikube-linux-amd64
 trivy-report.json
 bandit-report.json
 gitleaks-report.json
+semgrep-report.json
 __pycache__/
 *.pyc
+.venv/

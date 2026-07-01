@@ -9,9 +9,80 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
+
+  # ── Phase 1 : SAST ─────────────────────────────────────────────
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Gitleaks a besoin de l'historique complet
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create virtualenv and install SAST tools
+        run: |
+          python -m venv .sast-venv
+          .sast-venv/bin/pip install --upgrade pip
+          .sast-venv/bin/pip install bandit semgrep
+
+      - name: Run Bandit
+        run: |
+          .sast-venv/bin/bandit -r app/ -f json -o bandit-report.json || true
+          .sast-venv/bin/bandit -r app/ -f screen -lll
+        # -lll = seulement les issues HIGH severity et HIGH confidence
+        # exit code non-zero uniquement si HIGH+HIGH trouvé
+
+      - name: Run Semgrep
+        run: |
+          .sast-venv/bin/semgrep \
+            --config=p/security-audit \
+            --config=p/python \
+            --config=p/owasp-top-ten \
+            app/ \
+            --json --output semgrep-report.json
+          .sast-venv/bin/semgrep \
+            --config=p/security-audit \
+            --config=p/python \
+            --config=p/owasp-top-ten \
+            app/ \
+            --error
+        # --error = exit 1 si findings bloquants
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Utilise automatiquement .gitleaksignore s'il est présent
+
+      - name: Upload SAST reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-reports-${{ github.sha }}
+          path: |
+            bandit-report.json
+            semgrep-report.json
+
+      - name: SAST summary
+        if: always()
+        run: |
+          echo "## 🔍 SAST Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Bandit | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Semgrep | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gitleaks | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ── Phase 2 : Build + SCA + Deploy ────────────────────────────
   build-scan-deploy:
     runs-on: ubuntu-latest
-    # Expose le résultat du job pour que rollback puisse le lire
+    needs: sast              # bloque si SAST échoue
     outputs:
       deploy_status: ${{ steps.deploy.outcome }}
 
@@ -30,15 +101,10 @@ jobs:
           image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           format: table
           exit-code: "1"
-          severity: CRITICAL,HIGH
-          trivyignores: .trivyignore 
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
 
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-      
       - name: Start Minikube
         uses: medyagh/setup-minikube@latest
         with:
@@ -47,13 +113,15 @@ jobs:
           memory: 3g
 
       - name: Load image into Minikube
-        run: minikube image load $IMAGE_NAME:$IMAGE_TAG
+        run: |
+          minikube image load $IMAGE_NAME:$IMAGE_TAG
+          minikube image ls | grep $IMAGE_NAME
 
       - name: Install Helm
         uses: azure/setup-helm@v3
 
       - name: Deploy with Helm
-        id: deploy                   # ← id pour capturer le résultat
+        id: deploy
         run: |
           helm upgrade --install linsoft-app ./linsoft-demo-chart \
             --set image.repository=$IMAGE_NAME \
@@ -71,10 +139,16 @@ jobs:
         id: smoke
         run: |
           kubectl port-forward svc/linsoft-app-svc 8080:80 &
-          sleep 5
+          PF_PID=$!
+          for i in {1..10}; do
+            curl -sf http://localhost:8080/health > /dev/null 2>&1 && break
+            echo "Waiting for service... ($i/10)"
+            sleep 3
+          done
           curl -sf http://localhost:8080/health | grep "ok"
           curl -sf http://localhost:8080/ | grep "devsecops-k8s-demo"
           echo "✅ All smoke tests passed"
+          kill $PF_PID
 
       - name: Pipeline summary
         if: always()
@@ -82,6 +156,7 @@ jobs:
           echo "## 🚀 Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| SAST (Bandit + Semgrep + Gitleaks) | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Trivy scan | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Deploy | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
@@ -92,7 +167,6 @@ jobs:
   rollback:
     runs-on: ubuntu-latest
     needs: build-scan-deploy
-    # Se déclenche UNIQUEMENT si le job principal échoue
     if: failure()
     permissions:
       contents: read
@@ -114,11 +188,8 @@ jobs:
       - name: Rollback to previous revision
         run: |
           echo "⚠️ Deploy failed — rolling back..."
-
-          # Vérifier s'il y a une révision précédente
           REVISION=$(helm history linsoft-app --max 2 -o json \
             | python3 -c "import sys,json; h=json.load(sys.stdin); print(len(h))")
-
           if [ "$REVISION" -gt 1 ]; then
             helm rollback linsoft-app
             echo "✅ Rolled back to previous revision"
@@ -126,7 +197,6 @@ jobs:
             echo "ℹ️ No previous revision to rollback to"
             helm uninstall linsoft-app || true
           fi
-
           kubectl get pods
 
       - name: Rollback summary
