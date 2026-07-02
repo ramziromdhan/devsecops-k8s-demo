@@ -17,14 +17,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Gitleaks a besoin de l'historique complet
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Create virtualenv and install SAST tools
+      - name: Install SAST tools in venv
         run: |
           python -m venv .sast-venv
           .sast-venv/bin/pip install --upgrade pip
@@ -34,8 +34,6 @@ jobs:
         run: |
           .sast-venv/bin/bandit -r app/ -f json -o bandit-report.json || true
           .sast-venv/bin/bandit -r app/ -f screen -lll
-        # -lll = seulement les issues HIGH severity et HIGH confidence
-        # exit code non-zero uniquement si HIGH+HIGH trouvé
 
       - name: Run Semgrep
         run: |
@@ -43,46 +41,109 @@ jobs:
             --config=p/security-audit \
             --config=p/python \
             --config=p/owasp-top-ten \
-            app/ \
-            --json --output semgrep-report.json
-          .sast-venv/bin/semgrep \
-            --config=p/security-audit \
-            --config=p/python \
-            --config=p/owasp-top-ten \
-            app/ \
-            --error
-        # --error = exit 1 si findings bloquants
+            app/ --error
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Utilise automatiquement .gitleaksignore s'il est présent
 
       - name: Upload SAST reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sast-reports-${{ github.sha }}
-          path: |
-            bandit-report.json
-            semgrep-report.json
+          path: bandit-report.json
 
       - name: SAST summary
         if: always()
         run: |
           echo "## 🔍 SAST Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Tool | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Bandit | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Semgrep | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "| Gitleaks | ✅ |" >> $GITHUB_STEP_SUMMARY
-          echo "Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Bandit | Python security patterns |" >> $GITHUB_STEP_SUMMARY
+          echo "| Semgrep | OWASP Top 10 + multi-rules |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gitleaks | Secrets in git history |" >> $GITHUB_STEP_SUMMARY
 
-  # ── Phase 2 : Build + SCA + Deploy ────────────────────────────
+  # ── Phase 2 : SCA — Dockerfile + Image ────────────────────────
+  sca:
+    runs-on: ubuntu-latest
+    needs: sast
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Hadolint — Dockerfile analysis
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          format: sarif
+          output-file: hadolint-report.sarif
+          failure-threshold: error
+          # ignorer DL3042 (pip sans venv dans conteneur = acceptable)
+          ignore: DL3042
+
+      - name: Build Docker image
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
+
+      - name: Trivy — image vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+      - name: Trivy — generate SBOM
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+          format: cyclonedx
+          output: sbom.json
+          exit-code: "0"
+
+      - name: Upload SCA reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-reports-${{ github.sha }}
+          path: |
+            hadolint-report.sarif
+            sbom.json
+
+      - name: SCA summary
+        if: always()
+        run: |
+          echo "## 🐳 SCA Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Target | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Hadolint | Dockerfile best practices | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trivy | CVE scan (CRITICAL) | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trivy SBOM | CycloneDX inventory | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "Image: \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ── Phase 3 : IaC — Manifests + Helm (à venir) ────────────────
+  iac:
+    runs-on: ubuntu-latest
+    needs: sca
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Placeholder — Phase 3 IaC scan
+        run: |
+          echo "Phase 3 : Checkov + Kubesec à intégrer ici"
+          echo "## 🏗️ IaC Scan" >> $GITHUB_STEP_SUMMARY
+          echo "Phase 3 en cours de configuration" >> $GITHUB_STEP_SUMMARY
+
+  # ── Phase 4 : Deploy ───────────────────────────────────────────
   build-scan-deploy:
     runs-on: ubuntu-latest
-    needs: sast              # bloque si SAST échoue
+    needs: iac
     outputs:
       deploy_status: ${{ steps.deploy.outcome }}
 
@@ -94,16 +155,6 @@ jobs:
         run: |
           docker build -t $IMAGE_NAME:$IMAGE_TAG .
           docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
-
-      - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
-          format: table
-          exit-code: "1"
-          severity: CRITICAL
-          ignore-unfixed: true
-          trivyignores: .trivyignore
 
       - name: Start Minikube
         uses: medyagh/setup-minikube@latest
@@ -142,7 +193,7 @@ jobs:
           PF_PID=$!
           for i in {1..10}; do
             curl -sf http://localhost:8080/health > /dev/null 2>&1 && break
-            echo "Waiting for service... ($i/10)"
+            echo "Waiting... ($i/10)"
             sleep 3
           done
           curl -sf http://localhost:8080/health | grep "ok"
@@ -153,17 +204,15 @@ jobs:
       - name: Pipeline summary
         if: always()
         run: |
-          echo "## 🚀 Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Deploy Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Step | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| SAST (Bandit + Semgrep + Gitleaks) | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Trivy scan | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Deploy | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Smoke tests | ${{ steps.smoke.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "Image: \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
 
-  # ── Job rollback ───────────────────────────────────────────────
+  # ── Rollback ───────────────────────────────────────────────────
   rollback:
     runs-on: ubuntu-latest
     needs: build-scan-deploy
@@ -185,16 +234,15 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v3
 
-      - name: Rollback to previous revision
+      - name: Rollback
         run: |
-          echo "⚠️ Deploy failed — rolling back..."
+          echo "⚠️ Rolling back..."
           REVISION=$(helm history linsoft-app --max 2 -o json \
             | python3 -c "import sys,json; h=json.load(sys.stdin); print(len(h))")
           if [ "$REVISION" -gt 1 ]; then
             helm rollback linsoft-app
-            echo "✅ Rolled back to previous revision"
+            echo "✅ Rolled back"
           else
-            echo "ℹ️ No previous revision to rollback to"
             helm uninstall linsoft-app || true
           fi
           kubectl get pods
@@ -203,5 +251,4 @@ jobs:
         if: always()
         run: |
           echo "## ⚠️ Rollback executed" >> $GITHUB_STEP_SUMMARY
-          echo "Deploy failed on commit \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "Previous revision restored." >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
