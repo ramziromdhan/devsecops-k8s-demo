@@ -1,6 +1,6 @@
 # ── Stage 1 : builder ──────────────────────────────────────────
 # Utilise une version précise de Python — c'est ça la vraie sécurité
-FROM python:3.12.5-slim AS builder
+FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e AS builder
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,8 +16,8 @@ COPY app/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Stage 2 : image finale ─────────────────────────────────────
-# Même version de base que le builder pour cohérence
-FROM python:3.12.5-slim AS runtime
+
+FROM python:3.12-slim@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e AS runtime
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
