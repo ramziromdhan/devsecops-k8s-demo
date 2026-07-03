@@ -4,6 +4,7 @@ metadata:
   name: {{ .Release.Name }}-app
   labels:
     app: {{ .Release.Name }}
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -18,29 +19,60 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}
+      annotations:
+        # Seccomp profile — CKV_K8S_31
+        seccomp.security.alpha.kubernetes.io/pod: runtime/default
     spec:
+      # Ne pas monter le token SA inutilement — CKV_K8S_38
+      automountServiceAccountToken: false
+      # securityContext au niveau Pod — CKV_K8S_29
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}  # ← point 1 : variable, pas hardcodé
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           env:
             - name: APP_VERSION
               value: {{ .Values.config.appVersion | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+          # securityContext au niveau container — CKV_K8S_30
+          securityContext:
+            allowPrivilegeEscalation: false   # CKV_K8S_20
+            readOnlyRootFilesystem: true       # CKV_K8S_22
+            runAsNonRoot: true                 # CKV_K8S_23
+            runAsUser: 1001
+            capabilities:
+              drop:
+                - ALL                          # CKV_K8S_28 + CKV_K8S_37
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          readinessProbe:                                   # ← point 2 : probe obligatoire
+          readinessProbe:
             httpGet:
               path: /health
               port: {{ .Values.service.targetPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 3
-          livenessProbe:                                    # ← point 3 : probe obligatoire
+          livenessProbe:
             httpGet:
               path: /health
               port: {{ .Values.service.targetPort }}
             initialDelaySeconds: 10
             periodSeconds: 15
             failureThreshold: 3
+          # tmpfs pour l'app si readOnlyRootFilesystem — uvicorn a besoin de /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

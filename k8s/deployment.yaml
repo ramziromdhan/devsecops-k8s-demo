@@ -6,12 +6,12 @@ metadata:
   labels:
     app: linsoft-demo
 spec:
-  replicas: 2                          # 2 pods — ça teste la résilience
+  replicas: 2
   selector:
     matchLabels:
       app: linsoft-demo
   strategy:
-    type: RollingUpdate                # mise à jour sans downtime
+    type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
       maxSurge: 1
@@ -20,9 +20,18 @@ spec:
       labels:
         app: linsoft-demo
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: app
           image: localhost:5000/linsoft-demo:1.0.0
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
@@ -34,22 +43,38 @@ spec:
                 secretKeyRef:
                   name: linsoft-demo-secret
                   key: API_KEY
-          resources:                   # TOUJOURS définir des limites
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            capabilities:
+              drop:
+                - ALL
+          resources:
             requests:
               cpu: "100m"
               memory: "128Mi"
             limits:
               cpu: "500m"
               memory: "256Mi"
-          livenessProbe:               # K8s redémarre le pod si ça échoue
+          livenessProbe:
             httpGet:
               path: /health
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 15
-          readinessProbe:              # K8s n'envoie du trafic que si ready
+            failureThreshold: 3
+          readinessProbe:
             httpGet:
               path: /health
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
