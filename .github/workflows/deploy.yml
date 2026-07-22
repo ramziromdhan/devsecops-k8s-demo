@@ -286,11 +286,119 @@ jobs:
           echo "| Deploy | ${{ steps.deploy.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Smoke tests | ${{ steps.smoke.outcome == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "Image: \`${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+  
+  # ── Phase 4 : Runtime security audit ──────────────────────────
+  runtime:
+    runs-on: ubuntu-latest
+    needs: build-scan-deploy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Minikube
+        uses: medyagh/setup-minikube@latest
+        with:
+          driver: docker
+          cpus: 2
+          memory: 3g
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Deploy app pour audit runtime
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          minikube image load $IMAGE_NAME:$IMAGE_TAG
+          helm upgrade --install linsoft-app ./linsoft-demo-chart \
+            --set image.repository=$IMAGE_NAME \
+            --set image.tag=$IMAGE_TAG \
+            --set image.pullPolicy=Never \
+            --wait \
+            --timeout 120s
+
+      - name: kube-bench — CIS Benchmark
+        run: |
+          kubectl apply -f \
+            https://raw.githubusercontent.com/aquasecurity/kube-bench/main/job.yaml
+
+          kubectl wait --for=condition=complete \
+            job/kube-bench --timeout=180s
+
+          kubectl logs job/kube-bench | tee kube-bench-report.txt
+          kubectl delete job kube-bench
+
+          grep -E "^== Summary" -A 4 kube-bench-report.txt || true
+
+      - name: kube-hunter — Pentest automatisé
+        run: |
+          kubectl run kube-hunter \
+            --image=aquasec/kube-hunter \
+            --restart=Never \
+            -- --pod --report json
+
+          kubectl wait pod/kube-hunter \
+            --for=jsonpath='{.status.phase}'=Succeeded \
+            --timeout=180s || \
+          kubectl wait pod/kube-hunter \
+            --for=jsonpath='{.status.phase}'=Failed \
+            --timeout=10s || true
+
+          kubectl logs kube-hunter | tee kube-hunter-report.json || true
+          kubectl delete pod kube-hunter --ignore-not-found=true
+
+          VULNS=$(python3 -c "
+          import sys, json
+          try:
+              data = json.load(open('kube-hunter-report.json'))
+              print(len(data.get('vulnerabilities', [])))
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+          echo "kube-hunter vulnerabilities: $VULNS"
+          if [ "$VULNS" -gt 5 ]; then
+            echo "⚠️ Seuil dépassé : $VULNS vulnérabilités"
+            exit 1
+          fi
+
+      - name: Upload runtime reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-reports-${{ github.sha }}
+          path: |
+            kube-bench-report.txt
+            kube-hunter-report.json
+
+      - name: Runtime summary
+        if: always()
+        run: |
+          PASS=$(grep -c "^\[PASS\]" kube-bench-report.txt 2>/dev/null || echo "0")
+          FAIL=$(grep -c "^\[FAIL\]" kube-bench-report.txt 2>/dev/null || echo "0")
+          WARN=$(grep -c "^\[WARN\]" kube-bench-report.txt 2>/dev/null || echo "0")
+
+          VULNS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('kube-hunter-report.json'))
+              print(len(data.get('vulnerabilities', [])))
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+          echo "## Runtime Security Audit" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Metric | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| kube-bench | CIS PASS | $PASS |" >> $GITHUB_STEP_SUMMARY
+          echo "| kube-bench | CIS FAIL | $FAIL (Minikube limitations) |" >> $GITHUB_STEP_SUMMARY
+          echo "| kube-bench | CIS WARN | $WARN |" >> $GITHUB_STEP_SUMMARY
+          echo "| kube-hunter | Vulnerabilities | $VULNS |" >> $GITHUB_STEP_SUMMARY
 
   # ── Rollback ───────────────────────────────────────────────────
   rollback:
     runs-on: ubuntu-latest
-    needs: build-scan-deploy
+    needs: [build-scan-deploy, runtime]  
     if: failure()
     permissions:
       contents: read
