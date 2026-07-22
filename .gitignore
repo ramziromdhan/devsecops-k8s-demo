@@ -3,6 +3,9 @@ trivy-report.json
 bandit-report.json
 gitleaks-report.json
 semgrep-report.json
+zap-report.json
+zap-report.html
+zap.yaml
 __pycache__/
 *.pyc
 .venv/
